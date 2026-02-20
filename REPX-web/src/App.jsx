@@ -44,7 +44,6 @@ export default function App() {
   const repState = useRef({ active: false, startPerf: null });
   const setTimeRef = useRef(0);
   const pausedRef = useRef(false);
-  const unityFrameRef = useRef(null);
 
   const liveDuration = useMemo(
     () => new Date(sessionTimer * 1000).toISOString().substring(14, 19),
@@ -135,18 +134,8 @@ export default function App() {
       ws.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data);
-          setLiveData(payload);
           if (pausedRef.current) return;
-
-          // Forward live data to Unity (if embedded) via postMessage
-          try {
-            unityFrameRef.current?.contentWindow?.postMessage(
-              { type: "liveData", payload },
-              "*"
-            );
-          } catch (e) {
-            // ignore postMessage errors
-          }
+          setLiveData(payload);
 
           evaluatorRef.current.update(payload);
 
@@ -620,7 +609,7 @@ export default function App() {
           </p>
         </div>
       </Card>
-      <UnityEmbedPlaceholder iframeRef={unityFrameRef} />
+      <UnityEmbedPlaceholder />
       {renderLiveMetrics()}
       <div className="grid grid-cols-2 gap-3">
         <button

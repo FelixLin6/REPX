@@ -9,24 +9,20 @@ HOST, PORT = "localhost", 8765
 HZ = 50  # sampling rate to match app assumptions
 DT = 1 / HZ
 
-# 12 rep cycle with specified behaviors:
-# 1,3,5: partial ROM (too shallow)
-# 2,4,6: good form
-# 7,9,11: too fast
-# 8,10,12: good form
+# 12 rep cycle emphasizing large, obvious movements:
 REP_PROFILES = [
-    {"label": "partial", "total_s": 2.0, "rom": 60, "sway": 3, "jerky": False},   # rep 1
-    {"label": "good", "total_s": 2.2, "rom": 115, "sway": 2, "jerky": False},     # rep 2
-    {"label": "partial", "total_s": 2.0, "rom": 60, "sway": 3, "jerky": False},   # rep 3
-    {"label": "good", "total_s": 2.2, "rom": 115, "sway": 2, "jerky": False},     # rep 4
-    {"label": "partial", "total_s": 2.0, "rom": 60, "sway": 3, "jerky": False},   # rep 5
-    {"label": "good", "total_s": 2.2, "rom": 115, "sway": 2, "jerky": False},     # rep 6
-    {"label": "too_fast", "total_s": 0.7, "rom": 115, "sway": 3, "jerky": False}, # rep 7
-    {"label": "good", "total_s": 2.2, "rom": 115, "sway": 2, "jerky": False},     # rep 8
-    {"label": "too_fast", "total_s": 0.7, "rom": 115, "sway": 3, "jerky": False}, # rep 9
-    {"label": "good", "total_s": 2.2, "rom": 115, "sway": 2, "jerky": False},     # rep 10
-    {"label": "too_fast", "total_s": 0.7, "rom": 115, "sway": 3, "jerky": False}, # rep 11
-    {"label": "good", "total_s": 2.2, "rom": 115, "sway": 2, "jerky": False},     # rep 12
+    {"label": "big_full", "total_s": 1.8, "rom": 150, "sway": 2, "jerky": False},   # rep 1
+    {"label": "big_full", "total_s": 1.8, "rom": 150, "sway": 2, "jerky": False},   # rep 2
+    {"label": "big_full", "total_s": 1.8, "rom": 150, "sway": 2, "jerky": False},   # rep 3
+    {"label": "big_full", "total_s": 1.8, "rom": 150, "sway": 2, "jerky": False},   # rep 4
+    {"label": "big_full", "total_s": 1.8, "rom": 150, "sway": 2, "jerky": False},   # rep 5
+    {"label": "big_full", "total_s": 1.8, "rom": 150, "sway": 2, "jerky": False},   # rep 6
+    {"label": "big_full", "total_s": 1.8, "rom": 150, "sway": 2, "jerky": False},   # rep 7
+    {"label": "big_full", "total_s": 1.8, "rom": 150, "sway": 2, "jerky": False},   # rep 8
+    {"label": "big_full", "total_s": 1.8, "rom": 150, "sway": 2, "jerky": False},   # rep 9
+    {"label": "big_full", "total_s": 1.8, "rom": 150, "sway": 2, "jerky": False},   # rep 10
+    {"label": "big_full", "total_s": 1.8, "rom": 150, "sway": 2, "jerky": False},   # rep 11
+    {"label": "big_full", "total_s": 1.8, "rom": 150, "sway": 2, "jerky": False},   # rep 12
 ]
 
 REST_BETWEEN_REPS_S = (0.4, 1.0)  # random rest window

@@ -117,22 +117,10 @@
         createUnityInstance(canvas, config, (progress) => {
           document.querySelector("#unity-progress-bar-full").style.width = 100 * progress + "%";
               }).then((unityInstance) => {
-                window.unityInstance = unityInstance;
                 document.querySelector("#unity-loading-bar").style.display = "none";
                 document.querySelector("#unity-fullscreen-button").onclick = () => {
                   unityInstance.SetFullscreen(1);
                 };
-
-                // Forward browser postMessage liveData to Unity SendMessage
-                window.addEventListener("message", (event) => {
-                  const msg = event.data;
-                  if (!msg || msg.type !== "liveData" || !window.unityInstance) return;
-                  try {
-                    window.unityInstance.SendMessage("Bridge", "OnData", JSON.stringify(msg.payload || {}));
-                  } catch (e) {
-                    console.warn("SendMessage failed", e);
-                  }
-                });
 
                 var profile = unityProfiler.createButton(unityInstance);
                 profile.style.marginLeft = '5px';

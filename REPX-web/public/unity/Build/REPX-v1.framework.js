@@ -21,7 +21,6 @@ function(unityFramework = {})  {
 // can continue to use Module afterwards as well.
 var Module = typeof unityFramework != 'undefined' ? unityFramework : {};
 // Shim for legacy dynCall APIs if missing (Unity WebGL bridge expects these).
-// Attempts multiple tables/signatures to remain compatible with newer Emscripten builds.
 function __unityDynCall_vi(ptr, a) {
   try {
     const table =
