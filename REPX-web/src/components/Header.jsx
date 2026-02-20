@@ -5,7 +5,7 @@ export default function Header({ subtitle }) {
         <p className="text-xs uppercase tracking-[0.25em] text-cyan mb-1">
           REPX
         </p>
-        <h1 className="text-2xl font-bold text-text-primary">Sensor Training</h1>
+        <h1 className="text-2xl font-bold text-text-primary">Movement Intelligence</h1>
         {subtitle ? (
           <p className="text-sm text-text-secondary mt-1">{subtitle}</p>
         ) : null}

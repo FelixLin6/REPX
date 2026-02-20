@@ -1,7 +1,6 @@
 export const sensors = [
-  { name: "Left Arm IMU", status: "Connected" },
-  { name: "Right Arm IMU", status: "Connected" },
-  { name: "Torso IMU", status: "Searching" },
+  { name: "Upper Arm IMU", status: "Connected" },
+  { name: "Forearm IMU", status: "Connected" },
 ];
 
 export const exerciseCatalog = [

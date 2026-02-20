@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import BicepQualityEvaluator from "./utils/BicepQualityEvaluator";
 import Header from "./components/Header";
 import Card from "./components/Card";
 import MetricTile from "./components/MetricTile";
@@ -11,11 +12,6 @@ import {
   exerciseCatalog,
 } from "./mockData";
 
-const formIssuesSample = [
-  { time: "00:42", description: "Torso lean > 8°" },
-  { time: "01:58", description: "Elbow flare detected" },
-];
-
 export default function App() {
   const [screen, setScreen] = useState("welcome");
   const [activeTab, setActiveTab] = useState("home");
@@ -27,6 +23,26 @@ export default function App() {
   const [liveData, setLiveData] = useState(null);
   const [wsStatus, setWsStatus] = useState("disconnected");
   const [wsError, setWsError] = useState(null);
+  const [coachCue, setCoachCue] = useState(null);
+  const [formIssues, setFormIssues] = useState([]);
+  const [bicepMetrics, setBicepMetrics] = useState({
+    elbowAngle: null,
+    elbowVel: null,
+    upperarmSway: null,
+    upperarmVelPeak: null,
+  });
+  const bicepMetricState = useRef({
+    time: null,
+    angle: null,
+    p0: null,
+    velSign: null,
+    minP0: null,
+    maxP0: null,
+    peakVel: 0,
+  });
+  const evaluatorRef = useRef(new BicepQualityEvaluator());
+  const repState = useRef({ active: false, startPerf: null });
+  const setTimeRef = useRef(0);
 
   const liveDuration = useMemo(
     () => new Date(sessionTimer * 1000).toISOString().substring(14, 19),
@@ -34,17 +50,18 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (screen !== "live" || isPaused) return;
+    setTimeRef.current = sessionTimer;
+  }, [sessionTimer]);
+
+  useEffect(() => {
+    const canTrackTime =
+      screen === "live" && !isPaused && wsStatus === "connected";
+    if (!canTrackTime) return;
     const id = setInterval(() => setSessionTimer((t) => t + 1), 1000);
-    const repId = setInterval(
-      () => setRepCount((r) => r + 1),
-      2200 // light auto increments to visualize flow
-    );
     return () => {
       clearInterval(id);
-      clearInterval(repId);
     };
-  }, [screen, isPaused]);
+  }, [screen, isPaused, wsStatus]);
 
   useEffect(() => {
     if (["home", "live", "history", "settings"].includes(screen)) {
@@ -58,6 +75,37 @@ export default function App() {
     let ws;
     let reconnectTimer;
     let cancelled = false;
+
+    const signWithDeadband = (value, deadband = 1) => {
+      if (!Number.isFinite(value) || Math.abs(value) < deadband) return 0;
+      return value > 0 ? 1 : -1;
+    };
+
+    const resetBicepMetrics = () => {
+      bicepMetricState.current = {
+        time: null,
+        angle: null,
+        p0: null,
+        velSign: null,
+        minP0: null,
+        maxP0: null,
+        peakVel: 0,
+      };
+      setBicepMetrics({
+        elbowAngle: null,
+        elbowVel: null,
+        upperarmSway: null,
+        upperarmVelPeak: null,
+      });
+    };
+    const resetFormIssues = () => {
+      setFormIssues([]);
+      try {
+        localStorage.removeItem("formIssuesCurrentSet");
+      } catch (e) {
+        // ignore storage issues
+      }
+    };
 
     const connect = () => {
       if (cancelled) return;
@@ -75,13 +123,118 @@ export default function App() {
       };
 
       ws.onerror = () => {
-        setWsError("WebSocket error");
+        setWsError("Sensor link issue");
       };
 
       ws.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data);
           setLiveData(payload);
+          evaluatorRef.current.update(payload);
+
+          if (selectedExercise === "Bicep Curl") {
+            const now = performance.now();
+            const angle =
+              typeof payload?.dP === "number" ? payload.dP : null; // elbow angle proxy (pitch diff)
+            const p0 = typeof payload?.p0 === "number" ? payload.p0 : null; // upper arm pitch
+
+            const last = bicepMetricState.current;
+            let elbowVel = null;
+
+            if (angle !== null && last.time !== null && last.angle !== null) {
+              const dt = (now - last.time) / 1000;
+              if (dt > 0) {
+                elbowVel = (angle - last.angle) / dt;
+              }
+            }
+
+            if (p0 !== null) {
+              if (last.minP0 === null || p0 < last.minP0) last.minP0 = p0;
+              if (last.maxP0 === null || p0 > last.maxP0) last.maxP0 = p0;
+
+              if (last.time !== null && last.p0 !== null) {
+                const dt = (now - last.time) / 1000;
+                if (dt > 0) {
+                  const p0Vel = (p0 - last.p0) / dt;
+                  const absVel = Math.abs(p0Vel);
+                  if (absVel > last.peakVel) last.peakVel = absVel;
+                }
+              }
+            }
+
+            const currentSign = signWithDeadband(elbowVel);
+            const prevSign = last.velSign;
+
+            // mark rep start on upward motion
+            if (!repState.current.active && currentSign === 1) {
+              repState.current = { active: true, startPerf: now };
+              evaluatorRef.current.start_rep();
+            }
+
+            // Detect a top-of-rep transition (positive → negative velocity)
+            if (
+              currentSign === -1 &&
+              prevSign === 1 &&
+              last.maxP0 !== null &&
+              last.minP0 !== null
+            ) {
+              const sway = last.maxP0 - last.minP0;
+              const peak = last.peakVel || null;
+              const repTime =
+                repState.current.active && repState.current.startPerf !== null
+                  ? (now - repState.current.startPerf) / 1000
+                  : 0;
+              const result = evaluatorRef.current.end_rep(
+                repTime,
+                setTimeRef.current
+              );
+              setBicepMetrics((prev) => ({
+                elbowAngle: angle ?? prev.elbowAngle,
+                elbowVel: elbowVel ?? prev.elbowVel,
+                upperarmSway: result?.rep_metrics?.upperarm_sway ?? sway,
+                upperarmVelPeak: result?.rep_metrics?.peak_elbow_vel ?? peak,
+              }));
+              setRepCount((c) => c + 1);
+              if (result?.coach_cue) {
+                setCoachCue(result.coach_cue);
+              }
+              if (result?.issue) {
+                const entry = {
+                  time: liveDuration,
+                  description: result.coach_cue || result.issue,
+                };
+                setFormIssues((prev) => {
+                  const updated = [...prev, entry];
+                  try {
+                    localStorage.setItem(
+                      "formIssuesCurrentSet",
+                      JSON.stringify(updated)
+                    );
+                  } catch (e) {
+                    // ignore storage issues
+                  }
+                  return updated;
+                });
+              }
+              repState.current = { active: false, startPerf: null };
+              // reset per-rep trackers
+              last.minP0 = p0;
+              last.maxP0 = p0;
+              last.peakVel = 0;
+            } else {
+              setBicepMetrics((prev) => ({
+                elbowAngle: angle ?? prev.elbowAngle,
+                elbowVel: elbowVel ?? prev.elbowVel,
+                upperarmSway: prev.upperarmSway,
+                upperarmVelPeak: prev.upperarmVelPeak,
+              }));
+            }
+
+            last.time = now;
+            last.angle = angle;
+            last.p0 = p0;
+            last.velSign = currentSign !== 0 ? currentSign : prevSign;
+          }
         } catch (err) {
           console.error("Failed to parse live data", err);
         }
@@ -93,16 +246,45 @@ export default function App() {
     return () => {
       cancelled = true;
       setWsStatus("disconnected");
+      repState.current = { active: false, startPerf: null };
+      evaluatorRef.current.reset();
+      setCoachCue(null);
+      resetFormIssues();
+      resetBicepMetrics();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (ws) ws.close();
     };
-  }, [screen]);
+  }, [screen, selectedExercise]);
 
   const startLiveSession = (exercise) => {
     setSelectedExercise(exercise);
     setRepCount(0);
     setSessionTimer(0);
     setIsPaused(false);
+    repState.current = { active: false, startPerf: null };
+    evaluatorRef.current.reset();
+    setCoachCue(null);
+    setFormIssues([]);
+    try {
+      localStorage.removeItem("formIssuesCurrentSet");
+    } catch (e) {
+      // ignore storage issues
+    }
+    bicepMetricState.current = {
+      time: null,
+      angle: null,
+      p0: null,
+      velSign: null,
+      minP0: null,
+      maxP0: null,
+      peakVel: 0,
+    };
+    setBicepMetrics({
+      elbowAngle: null,
+      elbowVel: null,
+      upperarmSway: null,
+      upperarmVelPeak: null,
+    });
     setScreen("live");
   };
 
@@ -176,7 +358,7 @@ export default function App() {
       <Card>
         <div className="space-y-3">
           <p className="text-sm text-text-secondary">
-            Start a guided Bicep Curl session or review progress.
+            Jump into a guided session right away.
           </p>
           <div className="flex gap-3">
             <button
@@ -184,12 +366,6 @@ export default function App() {
               className="flex-1 py-3 rounded-xl bg-accent text-black font-semibold"
             >
               Quick Start
-            </button>
-            <button
-              onClick={() => setScreen("history")}
-              className="w-24 py-3 rounded-xl border border-border text-text-primary"
-            >
-              History
             </button>
           </div>
         </div>
@@ -228,6 +404,19 @@ export default function App() {
   const renderSelectExercise = () => (
     <div className="space-y-5">
       <Header subtitle="Quick Start · Choose by muscle group" />
+      <Card title="Quick Start">
+        <div className="space-y-3">
+          <p className="text-sm text-text-secondary">
+            Start a guided Bicep Curl immediately.
+          </p>
+          <button
+            onClick={() => startLiveSession("Bicep Curl")}
+            className="w-full py-3 rounded-xl bg-accent text-black font-semibold"
+          >
+            Start Bicep Curls
+          </button>
+        </div>
+      </Card>
       {exerciseCatalog.map((group) => (
         <Card key={group.group} title={group.group}>
           <div className="space-y-4">
@@ -285,6 +474,64 @@ export default function App() {
     </div>
   );
 
+  const formatMetric = (value, digits = 1, suffix = "°") =>
+    Number.isFinite(value) ? `${value.toFixed(digits)}${suffix}` : "—";
+
+  const renderLiveMetrics = () => {
+    const isBicep = selectedExercise === "Bicep Curl";
+    if (isBicep) {
+      return (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <MetricTile
+            label="Elbow Angle"
+            value={formatMetric(bicepMetrics.elbowAngle)}
+          />
+          <MetricTile
+            label="Elbow Velocity"
+            value={formatMetric(bicepMetrics.elbowVel, 1, "°/s")}
+          />
+          <MetricTile
+            label="Upper Arm Sway"
+            value={formatMetric(bicepMetrics.upperarmSway)}
+          />
+          <MetricTile
+            label="Upper Arm Peak Vel"
+            value={formatMetric(bicepMetrics.upperarmVelPeak, 1, "°/s")}
+          />
+        </div>
+      );
+    }
+
+    return (
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <MetricTile
+          label="Arm Elevation Angle"
+          value={
+            typeof liveData?.p1 === "number"
+              ? `${liveData.p1.toFixed(1)}°`
+              : "—"
+          }
+        />
+        <MetricTile
+          label="Elbow Angle"
+          value={
+            typeof liveData?.dP === "number"
+              ? `${liveData.dP.toFixed(1)}°`
+              : "—"
+          }
+        />
+        <MetricTile
+          label="Torso Lean (pitch)"
+          value={
+            typeof liveData?.p0 === "number"
+              ? `${liveData.p0.toFixed(1)}°`
+              : "—"
+          }
+        />
+      </div>
+    );
+  };
+
   const renderLive = () => (
     <div className="space-y-5">
       <Header subtitle={selectedExercise} />
@@ -303,7 +550,7 @@ export default function App() {
             {wsStatus}
           </span>
         </span>
-        {wsError ? <span className="text-accent">Check BLE bridge</span> : null}
+        {wsError ? <span className="text-accent">Check sensor connection</span> : null}
       </div>
       <div className="grid grid-cols-2 gap-3">
         <Card title="Timer">
@@ -313,32 +560,15 @@ export default function App() {
         <RepCounter count={repCount} />
       </div>
       <UnityEmbedPlaceholder />
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <MetricTile
-          label="Arm Elevation Angle"
-          value={
-            typeof liveData?.p1 === "number"
-              ? `${liveData.p1.toFixed(1)}°`
-              : "62°"
-          }
-        />
-        <MetricTile
-          label="Elbow Angle"
-          value={
-            typeof liveData?.dP === "number"
-              ? `${liveData.dP.toFixed(1)}°`
-              : "47°"
-          }
-        />
-        <MetricTile
-          label="Torso Lean (pitch)"
-          value={
-            typeof liveData?.p0 === "number"
-              ? `${liveData.p0.toFixed(1)}°`
-              : "5°"
-          }
-        />
-      </div>
+      {renderLiveMetrics()}
+      {coachCue ? (
+        <Card title="Coaching">
+          <div className="flex items-center gap-2">
+            <span className="inline-flex h-2 w-2 rounded-full bg-accent" />
+            <p className="text-sm text-text-primary">{coachCue}</p>
+          </div>
+        </Card>
+      ) : null}
       <div className="grid grid-cols-2 gap-3">
         <button
           onClick={() => setIsPaused((p) => !p)}
@@ -374,15 +604,21 @@ export default function App() {
         </div>
       </Card>
       <Card title="Form Issues">
-        {formIssuesSample.map((issue) => (
-          <div
-            key={issue.time}
-            className="flex items-center justify-between py-2 border-b border-border last:border-none"
-          >
-            <p className="text-sm text-text-primary">{issue.description}</p>
-            <span className="text-xs text-text-secondary">{issue.time}</span>
-          </div>
-        ))}
+        {formIssues.length === 0 ? (
+          <p className="text-sm text-text-secondary">No issues flagged.</p>
+        ) : (
+          formIssues.map((issue, idx) => (
+            <div
+              key={`${issue.time}-${idx}`}
+              className="flex items-center justify-between py-2 border-b border-border last:border-none"
+            >
+              <p className="text-sm text-text-primary">{issue.description}</p>
+              <span className="text-xs text-text-secondary">
+                {issue.time ?? "--:--"}
+              </span>
+            </div>
+          ))
+        )}
       </Card>
       <div className="grid grid-cols-2 gap-3">
         <button

@@ -37,7 +37,7 @@ def parse_packet(data: bytearray) -> Optional[dict]:
       "p1": p1 / 100,
       "y1": y1 / 100,
       "dP": (p1 - p0) / 100,
-      "dR": (r1 - r0) / 100,
+      "dR": (r1 - r0) / 100,  
       "dY": (y1 - y0) / 100,
   }
 
