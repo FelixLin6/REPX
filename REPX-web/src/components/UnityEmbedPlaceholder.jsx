@@ -1,19 +1,14 @@
-import { useRef, useEffect } from "react";
-
-export default function UnityEmbedPlaceholder() {
-  const containerRef = useRef(null);
-
-  useEffect(() => {
-    // TODO: Insert Unity WebGL embed here (canvas/iframe/scripts)
-    // Example: createUnityInstance(containerRef.current, unityConfig);
-  }, []);
-
+export default function UnityEmbedPlaceholder({ iframeRef }) {
   return (
-    <div
-      ref={containerRef}
-      className="card w-full aspect-video flex items-center justify-center text-text-secondary text-sm"
-    >
-      Animation placeholder (Unity WebGL embed)
+    <div className="card w-full aspect-video overflow-hidden border border-border bg-black">
+      <iframe
+        ref={iframeRef}
+        title="Unity WebGL"
+        src="/unity/index.html"
+        className="w-full h-full"
+        allow="autoplay; fullscreen"
+        loading="lazy"
+      />
     </div>
   );
 }

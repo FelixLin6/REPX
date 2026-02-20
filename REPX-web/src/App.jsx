@@ -44,6 +44,7 @@ export default function App() {
   const repState = useRef({ active: false, startPerf: null });
   const setTimeRef = useRef(0);
   const pausedRef = useRef(false);
+  const unityFrameRef = useRef(null);
 
   const liveDuration = useMemo(
     () => new Date(sessionTimer * 1000).toISOString().substring(14, 19),
@@ -136,6 +137,17 @@ export default function App() {
           const payload = JSON.parse(event.data);
           setLiveData(payload);
           if (pausedRef.current) return;
+
+          // Forward live data to Unity (if embedded) via postMessage
+          try {
+            unityFrameRef.current?.contentWindow?.postMessage(
+              { type: "liveData", payload },
+              "*"
+            );
+          } catch (e) {
+            // ignore postMessage errors
+          }
+
           evaluatorRef.current.update(payload);
 
           if (selectedExercise === "Bicep Curl") {
@@ -220,7 +232,7 @@ export default function App() {
                 const cueText = isIssue
                   ? issueMap[result.issue] || "Check form"
                   : positiveCues[next % positiveCues.length];
-                setCoachCue({
+                  setCoachCue({
                   text: cueText,
                   tone: isIssue ? "alert" : "positive",
                   rep: next,
@@ -608,7 +620,7 @@ export default function App() {
           </p>
         </div>
       </Card>
-      <UnityEmbedPlaceholder />
+      <UnityEmbedPlaceholder iframeRef={unityFrameRef} />
       {renderLiveMetrics()}
       <div className="grid grid-cols-2 gap-3">
         <button
