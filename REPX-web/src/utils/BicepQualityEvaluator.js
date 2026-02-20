@@ -128,14 +128,18 @@ export default class BicepQualityEvaluator {
       swinging: upperarm_sway > 12 || swing_ratio > 0.18,
       jerky: jerk_p95 > 1800,
       too_fast: rep_time_s < 0.9 || peak_elbow_vel > 220,
-      partial_rom: ROM < 75,
+      too_slow: rep_time_s > 3.0 || peak_elbow_vel < 40,
+      over_rom: ROM > 140,
+      partial_rom: ROM < 80,
     };
 
     let issue = null;
     if (issues.swinging) issue = "swinging";
     else if (issues.jerky) issue = "jerky";
     else if (issues.too_fast) issue = "too_fast";
+    else if (issues.over_rom) issue = "over_rom";
     else if (issues.partial_rom) issue = "partial_rom";
+    else if (issues.too_slow) issue = "too_slow";
 
     const coachMap = {
       too_fast: "Slow down—control the curl.",

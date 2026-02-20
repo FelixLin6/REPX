@@ -43,6 +43,7 @@ export default function App() {
   const evaluatorRef = useRef(new BicepQualityEvaluator());
   const repState = useRef({ active: false, startPerf: null });
   const setTimeRef = useRef(0);
+  const pausedRef = useRef(false);
 
   const liveDuration = useMemo(
     () => new Date(sessionTimer * 1000).toISOString().substring(14, 19),
@@ -52,6 +53,10 @@ export default function App() {
   useEffect(() => {
     setTimeRef.current = sessionTimer;
   }, [sessionTimer]);
+
+  useEffect(() => {
+    pausedRef.current = isPaused;
+  }, [isPaused]);
 
   useEffect(() => {
     const canTrackTime =
@@ -130,6 +135,7 @@ export default function App() {
         try {
           const payload = JSON.parse(event.data);
           setLiveData(payload);
+          if (pausedRef.current) return;
           evaluatorRef.current.update(payload);
 
           if (selectedExercise === "Bicep Curl") {
@@ -194,28 +200,54 @@ export default function App() {
                 upperarmSway: result?.rep_metrics?.upperarm_sway ?? sway,
                 upperarmVelPeak: result?.rep_metrics?.peak_elbow_vel ?? peak,
               }));
-              setRepCount((c) => c + 1);
-              if (result?.coach_cue) {
-                setCoachCue(result.coach_cue);
-              }
-              if (result?.issue) {
-                const entry = {
-                  time: liveDuration,
-                  description: result.coach_cue || result.issue,
+              setRepCount((c) => {
+                const next = c + 1;
+                const issueMap = {
+                  swinging: "Keep upper arm still",
+                  jerky: "Smooth it out",
+                  too_fast: "Slow down",
+                  too_slow: "Speed up",
+                  over_rom: "Don't overextend",
+                  partial_rom: "Curl higher",
                 };
-                setFormIssues((prev) => {
-                  const updated = [...prev, entry];
-                  try {
-                    localStorage.setItem(
-                      "formIssuesCurrentSet",
-                      JSON.stringify(updated)
-                    );
-                  } catch (e) {
-                    // ignore storage issues
-                  }
-                  return updated;
+                const isIssue = Boolean(result?.issue);
+                const positiveCues = [
+                  "Good form",
+                  "Keep it up",
+                  "Nice rep",
+                  "Solid tempo",
+                ];
+                const cueText = isIssue
+                  ? issueMap[result.issue] || "Check form"
+                  : positiveCues[next % positiveCues.length];
+                setCoachCue({
+                  text: cueText,
+                  tone: isIssue ? "alert" : "positive",
+                  rep: next,
                 });
-              }
+                if (isIssue) {
+                  const entry = {
+                    time: liveDuration,
+                    description: cueText,
+                  };
+                  setFormIssues((prev) => {
+                    if (prev.some((p) => p.description === entry.description)) {
+                      return prev;
+                    }
+                    const updated = [...prev, entry];
+                    try {
+                      localStorage.setItem(
+                        "formIssuesCurrentSet",
+                        JSON.stringify(updated)
+                      );
+                    } catch (e) {
+                      // ignore storage issues
+                    }
+                    return updated;
+                  });
+                }
+                return next;
+              });
               repState.current = { active: false, startPerf: null };
               // reset per-rep trackers
               last.minP0 = p0;
@@ -249,7 +281,6 @@ export default function App() {
       repState.current = { active: false, startPerf: null };
       evaluatorRef.current.reset();
       setCoachCue(null);
-      resetFormIssues();
       resetBicepMetrics();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (ws) ws.close();
@@ -326,7 +357,7 @@ export default function App() {
       <Card>
         <div className="space-y-4 text-center">
           <p className="text-text-secondary">
-            Connect your sensors to start the REPX demo.
+            Connect your sensors to start REPX.
           </p>
           <button
             onClick={() => setScreen("connect")}
@@ -559,16 +590,26 @@ export default function App() {
         </Card>
         <RepCounter count={repCount} />
       </div>
+      <Card
+        className={`border ${
+          coachCue?.tone === "alert"
+            ? "border-accent bg-[#1a1200]"
+            : "border-[#123d1c] bg-[#0f1a12]"
+        } ${coachCue ? "animate-pulse" : ""}`}
+      >
+        <div className="flex items-center gap-3">
+          <div
+            className={`h-3 w-3 rounded-full ${
+              coachCue?.tone === "alert" ? "bg-accent" : "bg-[#7cff7a]"
+            }`}
+          />
+          <p className="text-lg text-text-primary font-semibold">
+            {coachCue?.text || "Coaching will appear here as you move."}
+          </p>
+        </div>
+      </Card>
       <UnityEmbedPlaceholder />
       {renderLiveMetrics()}
-      {coachCue ? (
-        <Card title="Coaching">
-          <div className="flex items-center gap-2">
-            <span className="inline-flex h-2 w-2 rounded-full bg-accent" />
-            <p className="text-sm text-text-primary">{coachCue}</p>
-          </div>
-        </Card>
-      ) : null}
       <div className="grid grid-cols-2 gap-3">
         <button
           onClick={() => setIsPaused((p) => !p)}
@@ -605,7 +646,7 @@ export default function App() {
       </Card>
       <Card title="Form Issues">
         {formIssues.length === 0 ? (
-          <p className="text-sm text-text-secondary">No issues flagged.</p>
+          <p className="text-sm text-text-primary">Great set—no issues flagged.</p>
         ) : (
           formIssues.map((issue, idx) => (
             <div
@@ -613,9 +654,6 @@ export default function App() {
               className="flex items-center justify-between py-2 border-b border-border last:border-none"
             >
               <p className="text-sm text-text-primary">{issue.description}</p>
-              <span className="text-xs text-text-secondary">
-                {issue.time ?? "--:--"}
-              </span>
             </div>
           ))
         )}
