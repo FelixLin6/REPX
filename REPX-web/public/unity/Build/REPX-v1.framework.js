@@ -20,41 +20,6 @@ function(unityFramework = {})  {
 // before the code. Then that object will be used in the code, and you
 // can continue to use Module afterwards as well.
 var Module = typeof unityFramework != 'undefined' ? unityFramework : {};
-// Shim for legacy dynCall APIs if missing (Unity WebGL bridge expects these).
-function __unityDynCall_vi(ptr, a) {
-  try {
-    const table =
-      (Module['asm'] && Module['asm']['__indirect_function_table']) ||
-      Module['wasmTable'] ||
-      (typeof wasmTable !== 'undefined' ? wasmTable : null);
-    if (table && table.get) {
-      return table.get(ptr)(a);
-    }
-    if (Module['asm'] && Module['asm']['dynCall_vi']) {
-      return Module['asm']['dynCall_vi'](ptr, a);
-    }
-  } catch (e) {
-    console.warn('dynCall_vi shim failed', e);
-  }
-}
-function __unityDynCall_viii(ptr, a, b, c) {
-  try {
-    const table =
-      (Module['asm'] && Module['asm']['__indirect_function_table']) ||
-      Module['wasmTable'] ||
-      (typeof wasmTable !== 'undefined' ? wasmTable : null);
-    if (table && table.get) {
-      return table.get(ptr)(a, b, c);
-    }
-    if (Module['asm'] && Module['asm']['dynCall_viii']) {
-      return Module['asm']['dynCall_viii'](ptr, a, b, c);
-    }
-  } catch (e) {
-    console.warn('dynCall_viii shim failed', e);
-  }
-}
-Module.dynCall_vi = Module.dynCall_vi || __unityDynCall_vi;
-Module.dynCall_viii = Module.dynCall_viii || __unityDynCall_viii;
 
 // Set up the promise that indicates the Module is initialized
 var readyPromiseResolve, readyPromiseReject;
@@ -7849,8 +7814,23 @@ function dbg(text) {
   			if (webSocketState.debug)
   				console.log("[JSLIB WebSocket] Connected.");
   
-  			if (webSocketState.onOpen)
-  				Module.dynCall_vi(webSocketState.onOpen, instanceId);
+  			if (webSocketState.onOpen) {
+  				try {
+  					if (typeof Module.dynCall_vi === 'function') {
+  						Module.dynCall_vi(webSocketState.onOpen, instanceId);
+  					} else if (typeof Module.asmLibraryArg !== 'undefined' && Module.asmLibraryArg) {
+  						// Fallback for newer Emscripten versions
+  						Module.asmLibraryArg.dynCall_vi(webSocketState.onOpen, instanceId);
+  					} else {
+  						// Direct call if function pointer is available
+  						if (webSocketState.onOpen) {
+  							webSocketState.onOpen(instanceId);
+  						}
+  					}
+  				} catch (e) {
+  					console.error("[JSLIB WebSocket] Error calling onOpen callback:", e);
+  				}
+  			}
   
   		};
   
@@ -7870,7 +7850,15 @@ function dbg(text) {
   				HEAPU8.set(dataBuffer, buffer);
   
   				try {
-  					Module.dynCall_viii(webSocketState.onMessage, instanceId, buffer, dataBuffer.length);
+  					if (typeof Module.dynCall_viii === 'function') {
+  						Module.dynCall_viii(webSocketState.onMessage, instanceId, buffer, dataBuffer.length);
+  					} else if (typeof Module.asmLibraryArg !== 'undefined' && Module.asmLibraryArg) {
+  						Module.asmLibraryArg.dynCall_viii(webSocketState.onMessage, instanceId, buffer, dataBuffer.length);
+  					} else {
+  						webSocketState.onMessage(instanceId, buffer, dataBuffer.length);
+  					}
+  				} catch (e) {
+  					console.error("[JSLIB WebSocket] Error calling onMessage callback:", e);
   				} finally {
   					_free(buffer);
   				}
@@ -7882,7 +7870,15 @@ function dbg(text) {
   				HEAPU8.set(dataBuffer, buffer);
   
   				try {
-  					Module.dynCall_viii(webSocketState.onMessage, instanceId, buffer, dataBuffer.length);
+  					if (typeof Module.dynCall_viii === 'function') {
+  						Module.dynCall_viii(webSocketState.onMessage, instanceId, buffer, dataBuffer.length);
+  					} else if (typeof Module.asmLibraryArg !== 'undefined' && Module.asmLibraryArg) {
+  						Module.asmLibraryArg.dynCall_viii(webSocketState.onMessage, instanceId, buffer, dataBuffer.length);
+  					} else {
+  						webSocketState.onMessage(instanceId, buffer, dataBuffer.length);
+  					}
+  				} catch (e) {
+  					console.error("[JSLIB WebSocket] Error calling onMessage callback:", e);
   				} finally {
   					_free(buffer);
   				}
@@ -7904,7 +7900,15 @@ function dbg(text) {
   				stringToUTF8(msg, buffer, length);
   
   				try {
-  					Module.dynCall_vii(webSocketState.onError, instanceId, buffer);
+  					if (typeof Module.dynCall_vii === 'function') {
+  						Module.dynCall_vii(webSocketState.onError, instanceId, buffer);
+  					} else if (typeof Module.asmLibraryArg !== 'undefined' && Module.asmLibraryArg) {
+  						Module.asmLibraryArg.dynCall_vii(webSocketState.onError, instanceId, buffer);
+  					} else {
+  						webSocketState.onError(instanceId, buffer);
+  					}
+  				} catch (e) {
+  					console.error("[JSLIB WebSocket] Error calling onError callback:", e);
   				} finally {
   					_free(buffer);
   				}
@@ -7918,8 +7922,19 @@ function dbg(text) {
   			if (webSocketState.debug)
   				console.log("[JSLIB WebSocket] Closed.");
   
-  			if (webSocketState.onClose)
-  				Module.dynCall_vii(webSocketState.onClose, instanceId, ev.code);
+  			if (webSocketState.onClose) {
+  				try {
+  					if (typeof Module.dynCall_vii === 'function') {
+  						Module.dynCall_vii(webSocketState.onClose, instanceId, ev.code);
+  					} else if (typeof Module.asmLibraryArg !== 'undefined' && Module.asmLibraryArg) {
+  						Module.asmLibraryArg.dynCall_vii(webSocketState.onClose, instanceId, ev.code);
+  					} else {
+  						webSocketState.onClose(instanceId, ev.code);
+  					}
+  				} catch (e) {
+  					console.error("[JSLIB WebSocket] Error calling onClose callback:", e);
+  				}
+  			}
   
   			delete instance.ws;
   
