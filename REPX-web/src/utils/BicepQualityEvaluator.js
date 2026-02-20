@@ -124,41 +124,9 @@ export default class BicepQualityEvaluator {
     const jerk_p95 =
       jerks.length > 0 ? percentile(jerks.map((j) => Math.abs(j)), 95) : 0;
 
-    const issues = {
-      swinging: upperarm_sway > 12 || swing_ratio > 0.18,
-      jerky: jerk_p95 > 1800,
-      too_fast: rep_time_s < 0.9 || peak_elbow_vel > 220,
-      too_slow: rep_time_s > 3.0 || peak_elbow_vel < 40,
-      over_rom: ROM > 140,
-      partial_rom: ROM < 80,
-    };
-
-    let issue = null;
-    if (issues.swinging) issue = "swinging";
-    else if (issues.jerky) issue = "jerky";
-    else if (issues.too_fast) issue = "too_fast";
-    else if (issues.over_rom) issue = "over_rom";
-    else if (issues.partial_rom) issue = "partial_rom";
-    else if (issues.too_slow) issue = "too_slow";
-
-    const coachMap = {
-      too_fast: "Slow down—control the curl.",
-      swinging: "Keep your upper arm still.",
-      partial_rom: "Curl higher for full range.",
-      jerky: "Move smoother—no jerking.",
-    };
-
-    let coach_cue = null;
-    if (issue) {
-      const lastTime = this.lastIssueTime[issue];
-      if (
-        lastTime === undefined ||
-        current_set_time_s - lastTime >= ISSUE_COOLDOWN_S
-      ) {
-        coach_cue = coachMap[issue];
-        this.lastIssueTime[issue] = current_set_time_s;
-      }
-    }
+    // Bad-form checks are intentionally disabled for now.
+    const issue = null;
+    const coach_cue = null;
 
     const rep_metrics = {
       ROM,

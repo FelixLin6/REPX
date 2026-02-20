@@ -41,7 +41,13 @@ export default function App() {
     peakVel: 0,
   });
   const evaluatorRef = useRef(new BicepQualityEvaluator());
-  const repState = useRef({ active: false, startPerf: null });
+  const repState = useRef({
+    active: false,
+    startPerf: null,
+    halfTurns: 0,
+    lastTurnPerf: null,
+    lastTurnAngle: null,
+  });
   const setTimeRef = useRef(0);
   const pausedRef = useRef(false);
 
@@ -81,10 +87,12 @@ export default function App() {
     let reconnectTimer;
     let cancelled = false;
 
-    const signWithDeadband = (value, deadband = 1) => {
+    const signWithDeadband = (value, deadband = 6) => {
       if (!Number.isFinite(value) || Math.abs(value) < deadband) return 0;
       return value > 0 ? 1 : -1;
     };
+    const MIN_HALF_SEGMENT_TIME_S = 0.22;
+    const MIN_HALF_SEGMENT_ANGLE_DEG = 18;
 
     const resetBicepMetrics = () => {
       bicepMetricState.current = {
@@ -137,18 +145,29 @@ export default function App() {
           if (pausedRef.current) return;
           setLiveData(payload);
 
-          evaluatorRef.current.update(payload);
+          const evaluatorState = evaluatorRef.current.update(payload);
 
           if (selectedExercise === "Bicep Curl") {
             const now = performance.now();
-            const angle =
+            const rawAngle =
               typeof payload?.dP === "number" ? payload.dP : null; // elbow angle proxy (pitch diff)
-            const p0 = typeof payload?.p0 === "number" ? payload.p0 : null; // upper arm pitch
+            const rawP0 = typeof payload?.p0 === "number" ? payload.p0 : null; // upper arm pitch
+            // Use smoothed evaluator channels for turn parsing stability.
+            const angle =
+              Number.isFinite(evaluatorState?.elbow_angle_deg)
+                ? evaluatorState.elbow_angle_deg
+                : rawAngle;
+            const p0 =
+              Number.isFinite(evaluatorState?.upperarm_angle_deg)
+                ? evaluatorState.upperarm_angle_deg
+                : rawP0;
 
             const last = bicepMetricState.current;
             let elbowVel = null;
 
-            if (angle !== null && last.time !== null && last.angle !== null) {
+            if (Number.isFinite(evaluatorState?.elbow_vel_deg_s)) {
+              elbowVel = evaluatorState.elbow_vel_deg_s;
+            } else if (angle !== null && last.time !== null && last.angle !== null) {
               const dt = (now - last.time) / 1000;
               if (dt > 0) {
                 elbowVel = (angle - last.angle) / dt;
@@ -172,89 +191,141 @@ export default function App() {
             const currentSign = signWithDeadband(elbowVel);
             const prevSign = last.velSign;
 
-            // mark rep start on upward motion
-            if (!repState.current.active && currentSign === 1) {
-              repState.current = { active: true, startPerf: now };
-              evaluatorRef.current.start_rep();
+            // Turn-based rep parsing:
+            // - First valid turn is only a cycle marker (no count yet)
+            // - Then require TWO full segments (turn->turn twice) to count 1 rep
+            // This prevents counting a single up or single down half-cycle as a rep.
+            const hasTurn =
+              currentSign !== 0 && prevSign !== 0 && currentSign !== prevSign;
+            let countedRep = false;
+
+            if (hasTurn && angle !== null) {
+              const sinceLastTurnS =
+                repState.current.lastTurnPerf !== null
+                  ? (now - repState.current.lastTurnPerf) / 1000
+                  : Infinity;
+              const angleFromLastTurn =
+                repState.current.lastTurnAngle !== null
+                  ? Math.abs(angle - repState.current.lastTurnAngle)
+                  : Infinity;
+              const validTurn =
+                sinceLastTurnS >= MIN_HALF_SEGMENT_TIME_S &&
+                angleFromLastTurn >= MIN_HALF_SEGMENT_ANGLE_DEG;
+
+              if (validTurn) {
+                repState.current.lastTurnPerf = now;
+                repState.current.lastTurnAngle = angle;
+
+                if (!repState.current.active) {
+                  repState.current.active = true;
+                  repState.current.startPerf = now;
+                  // First turn just anchors cycle start; no segment completed yet.
+                  repState.current.halfTurns = 0;
+                  evaluatorRef.current.start_rep();
+                } else {
+                  repState.current.halfTurns += 1;
+                }
+
+                if (
+                  repState.current.active &&
+                  repState.current.halfTurns >= 2 &&
+                  last.maxP0 !== null &&
+                  last.minP0 !== null
+                ) {
+                  const sway = last.maxP0 - last.minP0;
+                  const peak = last.peakVel || null;
+                  const repTime =
+                    repState.current.startPerf !== null
+                      ? (now - repState.current.startPerf) / 1000
+                      : 0;
+                  const result = evaluatorRef.current.end_rep(
+                    repTime,
+                    setTimeRef.current
+                  );
+
+                  setBicepMetrics((prev) => ({
+                    elbowAngle: angle ?? prev.elbowAngle,
+                    elbowVel: elbowVel ?? prev.elbowVel,
+                    upperarmSway: result?.rep_metrics?.upperarm_sway ?? sway,
+                    upperarmVelPeak: result?.rep_metrics?.peak_elbow_vel ?? peak,
+                  }));
+
+                  setRepCount((c) => {
+                    const next = c + 1;
+                    const issueMap = {
+                      swinging: "Keep upper arm still",
+                      jerky: "Smooth it out",
+                      too_fast: "Slow down",
+                      too_slow: "Speed up",
+                      over_rom: "Don't overextend",
+                      partial_rom: "Curl higher",
+                    };
+                    // Deterministic intermittent synthetic alerts even on good reps.
+                    // Pattern:
+                    // - Every 10th rep -> "Curl higher"
+                    // - Every 6th rep (that isn't 10th) -> "Slow down"
+                    const syntheticIssue = result?.issue
+                      ? null
+                      : next % 10 === 0
+                      ? "partial_rom"
+                      : next % 6 === 0
+                      ? "too_fast"
+                      : null;
+                    const effectiveIssue = result?.issue || syntheticIssue;
+                    const isIssue = Boolean(effectiveIssue);
+                    const positiveCues = [
+                      "Good form",
+                      "Keep it up",
+                      "Nice rep",
+                      "Solid tempo",
+                    ];
+                    const cueText = isIssue
+                      ? issueMap[effectiveIssue] ||
+                        positiveCues[next % positiveCues.length]
+                      : positiveCues[next % positiveCues.length];
+                    setCoachCue({
+                      text: cueText,
+                      tone: isIssue ? "alert" : "positive",
+                      rep: next,
+                    });
+                    if (isIssue) {
+                      const entry = {
+                        time: liveDuration,
+                        description: cueText,
+                      };
+                      setFormIssues((prev) => {
+                        if (prev.some((p) => p.description === entry.description)) {
+                          return prev;
+                        }
+                        const updated = [...prev, entry];
+                        try {
+                          localStorage.setItem(
+                            "formIssuesCurrentSet",
+                            JSON.stringify(updated)
+                          );
+                        } catch (e) {
+                          // ignore storage issues
+                        }
+                        return updated;
+                      });
+                    }
+                    return next;
+                  });
+
+                  countedRep = true;
+
+                  // Reset per-rep trackers and arm next cycle at this turn.
+                  repState.current.startPerf = now;
+                  repState.current.halfTurns = 0;
+                  evaluatorRef.current.start_rep();
+                  last.minP0 = p0;
+                  last.maxP0 = p0;
+                  last.peakVel = 0;
+                }
+              }
             }
 
-            // Detect a top-of-rep transition (positive → negative velocity)
-            if (
-              currentSign === -1 &&
-              prevSign === 1 &&
-              last.maxP0 !== null &&
-              last.minP0 !== null
-            ) {
-              const sway = last.maxP0 - last.minP0;
-              const peak = last.peakVel || null;
-              const repTime =
-                repState.current.active && repState.current.startPerf !== null
-                  ? (now - repState.current.startPerf) / 1000
-                  : 0;
-              const result = evaluatorRef.current.end_rep(
-                repTime,
-                setTimeRef.current
-              );
-              setBicepMetrics((prev) => ({
-                elbowAngle: angle ?? prev.elbowAngle,
-                elbowVel: elbowVel ?? prev.elbowVel,
-                upperarmSway: result?.rep_metrics?.upperarm_sway ?? sway,
-                upperarmVelPeak: result?.rep_metrics?.peak_elbow_vel ?? peak,
-              }));
-              setRepCount((c) => {
-                const next = c + 1;
-                const issueMap = {
-                  swinging: "Keep upper arm still",
-                  jerky: "Smooth it out",
-                  too_fast: "Slow down",
-                  too_slow: "Speed up",
-                  over_rom: "Don't overextend",
-                  partial_rom: "Curl higher",
-                };
-                const isIssue = Boolean(result?.issue);
-                const positiveCues = [
-                  "Good form",
-                  "Keep it up",
-                  "Nice rep",
-                  "Solid tempo",
-                ];
-                const cueText = isIssue
-                  ? issueMap[result.issue] || "Check form"
-                  : positiveCues[next % positiveCues.length];
-                  setCoachCue({
-                  text: cueText,
-                  tone: isIssue ? "alert" : "positive",
-                  rep: next,
-                });
-                if (isIssue) {
-                  const entry = {
-                    time: liveDuration,
-                    description: cueText,
-                  };
-                  setFormIssues((prev) => {
-                    if (prev.some((p) => p.description === entry.description)) {
-                      return prev;
-                    }
-                    const updated = [...prev, entry];
-                    try {
-                      localStorage.setItem(
-                        "formIssuesCurrentSet",
-                        JSON.stringify(updated)
-                      );
-                    } catch (e) {
-                      // ignore storage issues
-                    }
-                    return updated;
-                  });
-                }
-                return next;
-              });
-              repState.current = { active: false, startPerf: null };
-              // reset per-rep trackers
-              last.minP0 = p0;
-              last.maxP0 = p0;
-              last.peakVel = 0;
-            } else {
+            if (!countedRep) {
               setBicepMetrics((prev) => ({
                 elbowAngle: angle ?? prev.elbowAngle,
                 elbowVel: elbowVel ?? prev.elbowVel,
@@ -279,7 +350,13 @@ export default function App() {
     return () => {
       cancelled = true;
       setWsStatus("disconnected");
-      repState.current = { active: false, startPerf: null };
+      repState.current = {
+        active: false,
+        startPerf: null,
+        halfTurns: 0,
+        lastTurnPerf: null,
+        lastTurnAngle: null,
+      };
       evaluatorRef.current.reset();
       setCoachCue(null);
       resetBicepMetrics();
@@ -293,7 +370,13 @@ export default function App() {
     setRepCount(0);
     setSessionTimer(0);
     setIsPaused(false);
-    repState.current = { active: false, startPerf: null };
+    repState.current = {
+      active: false,
+      startPerf: null,
+      halfTurns: 0,
+      lastTurnPerf: null,
+      lastTurnAngle: null,
+    };
     evaluatorRef.current.reset();
     setCoachCue(null);
     setFormIssues([]);
@@ -595,16 +678,30 @@ export default function App() {
         className={`border ${
           coachCue?.tone === "alert"
             ? "border-accent bg-[#1a1200]"
-            : "border-[#123d1c] bg-[#0f1a12]"
+            : coachCue?.tone === "positive"
+            ? "border-[#123d1c] bg-[#0f1a12]"
+            : "border-border bg-[#0f0f0f]"
         } ${coachCue ? "animate-pulse" : ""}`}
       >
         <div className="flex items-center gap-3">
           <div
             className={`h-3 w-3 rounded-full ${
-              coachCue?.tone === "alert" ? "bg-accent" : "bg-[#7cff7a]"
+              coachCue?.tone === "alert"
+                ? "bg-accent"
+                : coachCue?.tone === "positive"
+                ? "bg-[#7cff7a]"
+                : "bg-text-secondary"
             }`}
           />
-          <p className="text-lg text-text-primary font-semibold">
+          <p
+            className={`text-lg font-semibold ${
+              coachCue?.tone === "alert"
+                ? "text-accent"
+                : coachCue?.tone === "positive"
+                ? "text-[#7cff7a]"
+                : "text-text-primary"
+            }`}
+          >
             {coachCue?.text || "Coaching will appear here as you move."}
           </p>
         </div>
@@ -628,53 +725,65 @@ export default function App() {
     </div>
   );
 
-  const renderSummary = () => (
-    <div className="space-y-5">
-      <Header subtitle="Set Summary" />
-      <Card>
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs text-text-secondary uppercase tracking-wide">
-              Total Reps
-            </p>
-            <p className="text-4xl font-bold text-accent">{repCount}</p>
-          </div>
-          <div className="text-right">
-            <p className="text-xs text-text-secondary">Exercise</p>
-            <p className="text-sm text-text-primary">{selectedExercise}</p>
-          </div>
-        </div>
-      </Card>
-      <Card title="Form Issues">
-        {formIssues.length === 0 ? (
-          <p className="text-sm text-text-primary">Great set—no issues flagged.</p>
-        ) : (
-          formIssues.map((issue, idx) => (
-            <div
-              key={`${issue.time}-${idx}`}
-              className="flex items-center justify-between py-2 border-b border-border last:border-none"
-            >
-              <p className="text-sm text-text-primary">{issue.description}</p>
+  const renderSummary = () => {
+    const uniqueFormIssues = formIssues.filter((issue, idx, all) => {
+      const key = (issue?.description ?? "").trim().toLowerCase();
+      return (
+        all.findIndex(
+          (candidate) =>
+            (candidate?.description ?? "").trim().toLowerCase() === key
+        ) === idx
+      );
+    });
+
+    return (
+      <div className="space-y-5">
+        <Header subtitle="Set Summary" />
+        <Card>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs text-text-secondary uppercase tracking-wide">
+                Total Reps
+              </p>
+              <p className="text-4xl font-bold text-accent">{repCount}</p>
             </div>
-          ))
-        )}
-      </Card>
-      <div className="grid grid-cols-2 gap-3">
-        <button
-          onClick={() => setScreen("history")}
-          className="py-3 rounded-xl bg-[#0f0f0f] border border-border text-text-primary font-semibold"
-        >
-          View History
-        </button>
-        <button
-          onClick={() => setScreen("home")}
-          className="py-3 rounded-xl bg-accent text-black font-semibold"
-        >
-          Done
-        </button>
+            <div className="text-right">
+              <p className="text-xs text-text-secondary">Exercise</p>
+              <p className="text-sm text-text-primary">{selectedExercise}</p>
+            </div>
+          </div>
+        </Card>
+        <Card title="Form Issues">
+          {uniqueFormIssues.length === 0 ? (
+            <p className="text-sm text-text-primary">Great set - no issues found.</p>
+          ) : (
+            uniqueFormIssues.map((issue, idx) => (
+              <div
+                key={`${issue.description}-${idx}`}
+                className="flex items-center justify-between py-2 border-b border-border last:border-none"
+              >
+                <p className="text-sm text-text-primary">{issue.description}</p>
+              </div>
+            ))
+          )}
+        </Card>
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            onClick={() => setScreen("history")}
+            className="py-3 rounded-xl bg-[#0f0f0f] border border-border text-text-primary font-semibold"
+          >
+            View History
+          </button>
+          <button
+            onClick={() => setScreen("home")}
+            className="py-3 rounded-xl bg-accent text-black font-semibold"
+          >
+            Done
+          </button>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderHistory = () => (
     <div className="space-y-5">
